@@ -212,7 +212,7 @@ if __name__ == '__main__':
     dispL = opencv_SGBM(imgl_hd, imgr_hd, True)
 
     # 视差图空洞填充
-    # dispL = fill_disparity_map(dispL)
+    dispL = fill_disparity_map(dispL)
 
     # # 计算视差图中每个值出现的次数
     # unique, counts = np.unique(dispL, return_counts=True)
@@ -228,7 +228,7 @@ if __name__ == '__main__':
     depthmap = creatDepthView(dispL)
 
     # 深度图空洞填充
-    depthmap = insert_depth_filled(depthmap)
+    # depthmap = insert_depth_filled(depthmap)
 
     #show original depthMap distanceMap
     cv.imshow('image',cv.resize(imgl,(960,540)))
