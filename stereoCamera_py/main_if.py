@@ -101,7 +101,7 @@ def opencv_SGBM(left_img, right_img, use_wls=False):
     matcherL = cv.StereoSGBM_create(**paramL)
     # 计算视差图
     dispL = matcherL.compute(left_img, right_img)
-    
+
     # WLS滤波平滑优化图像
     if use_wls:
         paramR = paramL
@@ -110,7 +110,7 @@ def opencv_SGBM(left_img, right_img, use_wls=False):
         dispR = matcherR.compute(right_img, left_img)
         # dispR = np.int16(dispR)
         lmbda = 80000
-        sigma = 1.0
+        sigma = 1.5
         filter = cv.ximgproc.createDisparityWLSFilter(matcher_left=matcherL)
         filter.setLambda(lmbda)
         filter.setSigmaColor(sigma)
@@ -122,7 +122,12 @@ def opencv_SGBM(left_img, right_img, use_wls=False):
     # 除以16得到真实视差（因为SGBM算法得到的视差是×16的）
     dispL[dispL < 0] = 1e-6
     dispL = dispL.astype(np.int16)
-    dispL = dispL / 16.0
+    dispL = dispL / 16.0  #float 64 必须转为uint才能正确显示，如果不使用空洞填充的话
+
+    dispL_nor = cv2.normalize(dispL,None,0,255,cv.NORM_MINMAX)
+    dispL_nor = dispL_nor.astype(np.uint8)
+    cv.imshow('dispL',cv.resize(dispL_nor,(960,540)))
+    cv.waitKey(0)
 
     return dispL
 
@@ -207,7 +212,7 @@ if __name__ == '__main__':
     dispL = opencv_SGBM(imgl_hd, imgr_hd, True)
 
     # 视差图空洞填充
-    dispL = fill_disparity_map(dispL)
+    # dispL = fill_disparity_map(dispL)
 
     # # 计算视差图中每个值出现的次数
     # unique, counts = np.unique(dispL, return_counts=True)
@@ -223,14 +228,14 @@ if __name__ == '__main__':
     depthmap = creatDepthView(dispL)
 
     # 深度图空洞填充
-    # depthmap = insert_depth_filled(depthmap)
+    depthmap = insert_depth_filled(depthmap)
 
     #show original depthMap distanceMap
     cv.imshow('image',cv.resize(imgl,(960,540)))
     cv.imshow('dispL',cv.resize(dispL,(960,540)))
     cv.imshow('depthmap',cv.resize(depthmap,(960,540)))
-    cv.imwrite('depth.png',depthmap)
-    cv.imwrite('displ.png',dispL)
+    # cv.imwrite('depth.png',depthmap)
+    # cv.imwrite('displ.png',dispL)
     cv.waitKey(0)
 
 
