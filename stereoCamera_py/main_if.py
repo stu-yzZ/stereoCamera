@@ -124,11 +124,6 @@ def opencv_SGBM(left_img, right_img, use_wls=False):
     dispL = dispL.astype(np.int16)
     dispL = dispL / 16.0  #float 64 必须转为uint才能正确显示，如果不使用空洞填充的话
 
-    dispL_nor = cv2.normalize(dispL,None,0,255,cv.NORM_MINMAX)
-    dispL_nor = dispL_nor.astype(np.uint8)
-    cv.imshow('dispL',cv.resize(dispL_nor,(960,540)))
-    cv.waitKey(0)
-
     return dispL
 
 
@@ -177,74 +172,168 @@ def creatDepthView(dispL = None,focal_length=1733.74,baseline = 0.53662): #focal
     depth_color_map = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
 
     return depth_color_map
+def process_stereo_images(img_left_path, img_right_path, output_dir='.', use_rectify=False, use_wls=True, show_visualization=True):
+    """
+    处理立体图像对，生成深度图和点云
+    
+    Args:
+        img_left_path: 左相机图像路径
+        img_right_path: 右相机图像路径
+        output_dir: 输出目录
+        use_rectify: 是否进行极线矫正（当输入图像已矫正时设为False）
+        use_wls: 是否使用WLS滤波
+        show_visualization: 是否显示可视化结果
+    
+    Returns:
+        point_cloud_path: 保存的点云文件路径
+    """
+    import os
+    
+    print(f"[INFO] 读取图像: {img_left_path}, {img_right_path}")
+    
+    # 检查文件存在性
+    if not os.path.exists(img_left_path) or not os.path.exists(img_right_path):
+        print(f"[ERROR] 图像文件不存在!")
+        return None
+    
+    # 读取图像
+    imgl = cv.imread(img_left_path)
+    imgr = cv.imread(img_right_path)
+    
+    if imgl is None or imgr is None:
+        print("[ERROR] 无法读取图像文件")
+        return None
+    
+    print(f"[INFO] 图像大小: {imgl.shape}")
+    
+    # 获取图像尺寸
+    high, wide = imgl.shape[0:2]
+    
+    # 初始化相机参数
+    config = stereoCamera()
+    print("[INFO] 相机参数已加载")
+    
+    # 获取极线校正参数和Q矩阵
+    print("[INFO] 正在计算极线校正参数...")
+    map1x, map1y, map2x, map2y, Q = getRectifyTransform(high, wide, config)
+    
+    # 如果需要进行极线矫正
+    if use_rectify:
+        print("[INFO] 正在进行图像畸变矫正...")
+        imgl_qb = cv.undistort(imgl, config.cam_matrix_l, config.distortion_l)
+        imgr_qb = cv.undistort(imgr, config.cam_matrix_r, config.distortion_r)
+        
+        print("[INFO] 正在进行极线校正...")
+        imgl_jx, imgr_jx = rectifyImage(imgl_qb, imgr_qb, map1x, map1y, map2x, map2y)
+        work_img_l, work_img_r = imgl_jx, imgr_jx
+    else:
+        print("[INFO] 跳过矫正步骤（输入图像已矫正）")
+        work_img_l, work_img_r = imgl, imgr
+    
+    # 转换为灰度图像并进行直方图均衡化
+    print("[INFO] 正在进行图像预处理...")
+    imgl_hd = cv.cvtColor(work_img_l, cv.COLOR_BGR2GRAY)
+    imgr_hd = cv.cvtColor(work_img_r, cv.COLOR_BGR2GRAY)
+    imgl_hd = cv.equalizeHist(imgl_hd)
+    imgr_hd = cv.equalizeHist(imgr_hd)
+    
+    # 立体匹配（SGBM算法）
+    print("[INFO] 正在计算视差图 (SGBM)...")
+    dispL = opencv_SGBM(imgl_hd, imgr_hd, use_wls=use_wls)
+    
+    # 视差图空洞填充
+    print("[INFO] 正在填充视差图空洞...")
+    dispL = fill_disparity_map(dispL)
+    
+    # 生成深度图
+    print("[INFO] 正在生成深度图...")
+    depthmap = creatDepthView(dispL)
+    
+    # 保存深度图
+    depth_output = os.path.join(output_dir, 'depth_map.png')
+    cv.imwrite(depth_output, depthmap)
+    print(f"[INFO] 深度图已保存: {depth_output}")
+    
+    # 保存视差图
+    dispL_vis = cv.normalize(dispL, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8)
+    disparity_output = os.path.join(output_dir, 'disparity_map.png')
+    cv.imwrite(disparity_output, dispL_vis)
+    print(f"[INFO] 视差图已保存: {disparity_output}")
+    
+    # 生成三维点云
+    print("[INFO] 正在生成三维点云...")
+    assert imgl.shape[:2] == dispL.shape[:2], "[ERROR] 图像和视差图尺寸不匹配!"
+    points, colors = create_point_cloud(dispL, imgl, Q)
+    
+    # 保存点云
+    depth_range = [500, 20000]  # 调整深度范围
+    point_cloud_path = os.path.join(output_dir, 'point_cloud.xyz')
+    save_point_cloud(points, colors, point_cloud_path, depth_range)
+    print(f"[INFO] 点云已保存: {point_cloud_path}")
+    print(f"[INFO] 点云包含 {len(points)} 个点")
+    
+    # 显示可视化结果（Mac上需要额外处理）
+    if show_visualization:
+        print("[INFO] 显示可视化结果...")
+        try:
+            cv.imshow('原始图像', cv.resize(imgl, (960, 540)))
+            cv.imshow('视差图', cv.resize(dispL_vis, (960, 540)))
+            cv.imshow('深度图', cv.resize(depthmap, (960, 540)))
+            print("[INFO] 按任意键关闭窗口...")
+            cv.waitKey(0)
+            cv.destroyAllWindows()
+        except Exception as e:
+            print(f"[WARNING] 无法显示图像窗口: {e}")
+    
+    return point_cloud_path
 
 
 if __name__ == '__main__':
-    imgl = cv.imread('./imagefolder/im0.png')
-    imgr = cv.imread('./imagefolder/im1.png')
-    high, wide = imgl.shape[0:2]
-
-    # # 读取相机参数
-    config = stereoCamera()
-
-    # # 消除图像畸变
-    # imgl_qb = cv.undistort(imgl, config.cam_matrix_l, config.distortion_l)
-    # imgr_qb = cv.undistort(imgr, config.cam_matrix_r, config.distortion_r)
-    # 数据集中图像是矫正之后的，
-
-    # # 极线校正  获取Q矩阵备用
-    map1x, map1y, map2x, map2y, Q = getRectifyTransform(high, wide, config)
-    # imgl_jx, imgr_jx = rectifyImage(imgl_qb, imgr_qb, map1x, map1y, map2x, map2y)
-    # print("Print Q!")
-    # print(Q)
-
-    # # 绘制等间距平行线，检查效果
-    # line = draw_line(imgl_jx, imgr_jx)
-    # line = draw_line(imgl_qb, imgr_qb)
-
-    imgl_hd = cv.cvtColor(imgl, cv.COLOR_BGR2GRAY)
-    imgr_hd = cv.cvtColor(imgr, cv.COLOR_BGR2GRAY)
-    imgl_hd = cv.equalizeHist(imgl_hd)
-    imgr_hd = cv.equalizeHist(imgr_hd)
-
-
-    # 立体匹配——SBGM算法
-    dispL = opencv_SGBM(imgl_hd, imgr_hd, True)
-
-    # 视差图空洞填充
-    dispL = fill_disparity_map(dispL)
-
-    # # 计算视差图中每个值出现的次数
-    # unique, counts = np.unique(dispL, return_counts=True)
-    # # 绘制直方图
-    # plt.figure(figsize=(10, 6))
-    # plt.bar(unique, counts, width=1, color='b', alpha=0.7)
-    # plt.xlabel('视差值')
-    # plt.ylabel('出现次数')
-    # plt.title('视差图直方图')
-    # plt.show()
-
-    #深度图
-    depthmap = creatDepthView(dispL)
-
-    # 深度图空洞填充
-    # depthmap = insert_depth_filled(depthmap)
-
-    #show original depthMap distanceMap
-    cv.imshow('image',cv.resize(imgl,(960,540)))
-    cv.imshow('dispL',cv.resize(dispL,(960,540)))
-    cv.imshow('depthmap',cv.resize(depthmap,(960,540)))
-    # cv.imwrite('depth.png',depthmap)
-    # cv.imwrite('displ.png',dispL)
-    cv.waitKey(0)
-
-
-    # 生成三维点云
-    assert imgl.shape[:2] == dispL.shape[:2], "Image and disparity map must have the same resolution!"
-    # points, colors = create_point_cloud(dispL, imgl_jx, Q)
-    points, colors = create_point_cloud(dispL, imgl, Q)
-
-    # 保存点云（带颜色.xyz;不带颜色.ply）
-    depth_range = [5000, 20000]  #深度范围
-    save_point_cloud(points, colors, 'point_cloud1.xyz', depth_range)
-
+    import os
+    import sys
+    
+    print("=" * 60)
+    print("双目立体相机处理系统")
+    print("=" * 60)
+    
+    # 获取当前脚本所在目录
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 定义图像路径（相对于脚本目录）
+    img_left = os.path.join(script_dir, 'imagefolder', 'im0.png')
+    img_right = os.path.join(script_dir, 'imagefolder', 'im1.png')
+    
+    # 尝试备选路径
+    if not os.path.exists(img_left) or not os.path.exists(img_right):
+        print("[WARNING] 默认图像不存在，尝试其他路径...")
+        img_left = os.path.join(script_dir, 'imagefolder', '5_l.jpg')
+        img_right = os.path.join(script_dir, 'imagefolder', '5_r.jpg')
+    
+    print(f"[INFO] 脚本目录: {script_dir}")
+    print(f"[INFO] 输出目录: {script_dir}")
+    print()
+    
+    # 处理立体图像对
+    # 注意：当输入图像已经是校正后的，设置 use_rectify=False
+    result = process_stereo_images(
+        img_left, 
+        img_right, 
+        output_dir=script_dir,
+        use_rectify=False,  # 数据集中的图像已经矫正
+        use_wls=True,
+        show_visualization=True
+    )
+    
+    if result:
+        print()
+        print("=" * 60)
+        print("[SUCCESS] 处理完成!")
+        print(f"[INFO] 点云文件位置: {result}")
+        print("=" * 60)
+        sys.exit(0)
+    else:
+        print()
+        print("=" * 60)
+        print("[ERROR] 处理失败")
+        print("=" * 60)
+        sys.exit(1)
